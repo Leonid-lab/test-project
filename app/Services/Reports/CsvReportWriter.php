@@ -27,9 +27,10 @@ class CsvReportWriter
         int $categoryId,
         CarbonImmutable $generatedAt,
         iterable $rows,
+        int $processId,
     ): string {
         $disk = $this->disk();
-        $directory = $this->directory();
+        $directory = $this->directory().'/'.$processId;
         $filename = sprintf(
             'report_%d_%d_%s.csv',
             $manufacturer->id,
@@ -106,6 +107,13 @@ class CsvReportWriter
             }
 
             throw new ReportWriteException('Unable to write the report file.', 0, $exception);
+        }
+    }
+
+    public function delete(string $path): void
+    {
+        if (! $this->disk()->delete($path)) {
+            throw new ReportWriteException('Unable to remove the report file.');
         }
     }
 

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature;
 
 use App\Data\ReportManufacturer;
+use App\Data\ReportRow;
 use App\Enums\ProcessStatusId;
 use App\Exceptions\ReportWriteException;
 use App\Models\Manufacturer;
@@ -19,6 +20,7 @@ use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Testing\PendingCommand;
+use RuntimeException;
 use Tests\TestCase;
 
 final class GenerateCategoryReportCommandTest extends TestCase
@@ -83,17 +85,19 @@ final class GenerateCategoryReportCommandTest extends TestCase
             self::assertSame(ProcessStatusId::Completed, $process->ps_id);
             self::assertNotNull($process->rp_exec_time);
             self::assertIsString($process->rp_file_save_path);
-            self::assertStringStartsWith('reports/report_', $process->rp_file_save_path);
+            self::assertStringStartsWith('reports/'.$process->rp_id.'/report_', $process->rp_file_save_path);
             self::assertFalse(str_starts_with($process->rp_file_save_path, '/'));
             Storage::disk('local')->assertExists($process->rp_file_save_path);
         }
 
         $firstPath = sprintf(
-            'reports/report_%d_10_2026-07-29_10-42-15.csv',
+            'reports/%d/report_%d_10_2026-07-29_10-42-15.csv',
+            $processes[0]->rp_id,
             $firstManufacturer->manufacturer_id,
         );
         $secondPath = sprintf(
-            'reports/report_%d_10_2026-07-29_10-42-15.csv',
+            'reports/%d/report_%d_10_2026-07-29_10-42-15.csv',
+            $processes[1]->rp_id,
             $secondManufacturer->manufacturer_id,
         );
 
@@ -164,6 +168,7 @@ final class GenerateCategoryReportCommandTest extends TestCase
                 int $categoryId,
                 CarbonImmutable $generatedAt,
                 iterable $rows,
+                int $processId,
             ): string {
                 throw new ReportWriteException('Disk failure.');
             }
@@ -179,6 +184,89 @@ final class GenerateCategoryReportCommandTest extends TestCase
         self::assertSame(ProcessStatusId::Failed, $process->ps_id);
         self::assertNull($process->rp_file_save_path);
         self::assertNotNull($process->rp_exec_time);
+        self::assertSame([], Storage::disk('local')->allFiles('reports'));
+    }
+
+    public function test_reports_generated_in_the_same_second_have_separate_files(): void
+    {
+        $manufacturer = Manufacturer::query()->create(['manufacturer_name' => 'Фабрика']);
+        $product = $this->product($manufacturer, 10, 'Товар');
+        $this->price($product, '10.0000', '2026-07-29');
+
+        $this->reportCommand(10)->assertSuccessful();
+        $this->price($product, '20.0000', '2026-07-29');
+        $this->reportCommand(10)->assertSuccessful();
+
+        $processes = ReportProcess::query()->orderBy('rp_id')->get();
+        self::assertCount(2, $processes);
+        $firstPath = $processes[0]->rp_file_save_path;
+        $secondPath = $processes[1]->rp_file_save_path;
+        self::assertIsString($firstPath);
+        self::assertIsString($secondPath);
+        self::assertNotSame($firstPath, $secondPath);
+        self::assertSame(basename($firstPath), basename($secondPath));
+        self::assertSame('10.00', $this->readCsv($firstPath)[2][2]);
+        self::assertSame('20.00', $this->readCsv($secondPath)[2][2]);
+
+        foreach ($processes as $process) {
+            self::assertSame(ProcessStatusId::Completed, $process->ps_id);
+            $this->get(route('report-processes.download', $process))
+                ->assertOk()
+                ->assertDownload(basename($process->rp_file_save_path));
+        }
+    }
+
+    public function test_a_report_is_removed_when_saving_its_completed_status_fails(): void
+    {
+        $manufacturer = Manufacturer::query()->create(['manufacturer_name' => 'Фабрика']);
+        $product = $this->product($manufacturer, 10, 'Товар');
+        $this->price($product, '10.0000', '2026-07-29');
+        ReportProcess::updating(static function (ReportProcess $process): void {
+            if ($process->ps_id === ProcessStatusId::Completed) {
+                throw new RuntimeException('Unable to save the completed status.');
+            }
+        });
+        Log::expects('error')->once();
+
+        try {
+            $this->reportCommand(10)
+                ->expectsOutputToContain('Report generation failed for manufacturer')
+                ->assertFailed();
+
+            $process = ReportProcess::query()->sole();
+            self::assertSame(ProcessStatusId::Failed, $process->ps_id);
+            self::assertNull($process->rp_file_save_path);
+            self::assertSame([], Storage::disk('local')->allFiles('reports'));
+        } finally {
+            ReportProcess::flushEventListeners();
+        }
+    }
+
+    public function test_a_partial_csv_is_removed_when_reading_rows_fails(): void
+    {
+        $rows = (static function (): iterable {
+            yield new ReportRow(1, 'Фабрика', 1, 'Товар', '10.00', '2026-07-29', 1);
+
+            throw new RuntimeException('Unable to read the remaining prices.');
+        })();
+
+        try {
+            $this->app->make(CsvReportWriter::class)->write(
+                new ReportManufacturer(1, 'Фабрика'),
+                10,
+                CarbonImmutable::parse('2026-07-29 10:42:15'),
+                $rows,
+                1,
+            );
+            self::fail('Writing an incomplete report must fail.');
+        } catch (ReportWriteException $exception) {
+            self::assertInstanceOf(RuntimeException::class, $exception->getPrevious());
+            self::assertSame(
+                'Unable to read the remaining prices.',
+                $exception->getPrevious()->getMessage(),
+            );
+        }
+
         self::assertSame([], Storage::disk('local')->allFiles('reports'));
     }
 

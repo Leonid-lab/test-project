@@ -12,7 +12,6 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 
 /**
  * Принимает HTTP-запросы для журнала процессов.
- *
  */
 final class ReportProcessController extends Controller
 {

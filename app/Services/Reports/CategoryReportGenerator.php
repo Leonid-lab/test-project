@@ -67,6 +67,7 @@ final class CategoryReportGenerator
         foreach ($manufacturers as $manufacturer) {
             $process = $this->tracker->start($pid);
             $startedAt = hrtime(true);
+            $path = null;
 
             try {
                 $path = $this->writer->write(
@@ -79,10 +80,23 @@ final class CategoryReportGenerator
                         $dateFrom,
                         $dateTo,
                     ),
+                    $process->rp_id,
                 );
                 $this->tracker->complete($process, $this->elapsedSeconds($startedAt), $path);
                 $paths[] = $path;
             } catch (Throwable $exception) {
+                if ($path !== null) {
+                    try {
+                        $this->writer->delete($path);
+                    } catch (Throwable $cleanupException) {
+                        Log::warning('Unable to remove a failed report file.', [
+                            'process_id' => $process->rp_id,
+                            'path' => $path,
+                            'exception' => $cleanupException,
+                        ]);
+                    }
+                }
+
                 $this->tracker->failWithoutHiding(
                     $process,
                     $this->elapsedSeconds($startedAt),
