@@ -29,7 +29,7 @@ final class CategoryReportGenerator
         $dateFrom = $dateTo->subDays($this->periodDays() - 1);
 
         if (! $this->repository->categoryHasProducts($categoryId)) {
-            $this->tracker->recordExpectedFailure($pid);
+            $this->tracker->recordFailure($pid);
 
             return new CategoryReportResult(
                 successful: false,
@@ -48,7 +48,7 @@ final class CategoryReportGenerator
         );
 
         if ($manufacturers === []) {
-            $this->tracker->recordExpectedFailure($pid);
+            $this->tracker->recordFailure($pid);
 
             return new CategoryReportResult(
                 successful: false,
@@ -67,7 +67,6 @@ final class CategoryReportGenerator
         foreach ($manufacturers as $manufacturer) {
             $process = $this->tracker->start($pid);
             $startedAt = hrtime(true);
-            $path = null;
 
             try {
                 $path = $this->writer->write(
@@ -85,16 +84,13 @@ final class CategoryReportGenerator
                 $this->tracker->complete($process, $this->elapsedSeconds($startedAt), $path);
                 $paths[] = $path;
             } catch (Throwable $exception) {
-                if ($path !== null) {
-                    try {
-                        $this->writer->delete($path);
-                    } catch (Throwable $cleanupException) {
-                        Log::warning('Unable to remove a failed report file.', [
-                            'process_id' => $process->rp_id,
-                            'path' => $path,
-                            'exception' => $cleanupException,
-                        ]);
-                    }
+                try {
+                    $this->writer->discard($process->rp_id);
+                } catch (Throwable $cleanupException) {
+                    Log::warning('Unable to remove a failed report file.', [
+                        'process_id' => $process->rp_id,
+                        'exception' => $cleanupException,
+                    ]);
                 }
 
                 $this->tracker->failWithoutHiding(
@@ -115,6 +111,8 @@ final class CategoryReportGenerator
                     0,
                     $exception,
                 );
+            } finally {
+                $this->tracker->release($process);
             }
         }
 

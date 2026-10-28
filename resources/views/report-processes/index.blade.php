@@ -72,8 +72,8 @@
                         'process-failed' => $process->ps_id === \App\Enums\ProcessStatusId::Failed,
                         'process-running' => $process->ps_id === \App\Enums\ProcessStatusId::Running,
                     ])>
-                        <td>{{ $process->rp_start_datetime->format('d.m.Y') }}</td>
-                        <td>{{ $process->rp_start_datetime->format('H:i:s') }}</td>
+                        <td>{{ $process->rp_start_datetime->setTimezone(config('app.timezone'))->format('d.m.Y') }}</td>
+                        <td>{{ $process->rp_start_datetime->setTimezone(config('app.timezone'))->format('H:i:s') }}</td>
                         <td>{{ $process->rp_exec_time === null ? '—' : $process->rp_exec_time.' с' }}</td>
                         <td>{{ $process->rp_pid }}</td>
                         <td>{{ $process->status->ps_name }}</td>

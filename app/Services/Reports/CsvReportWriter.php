@@ -40,7 +40,7 @@ class CsvReportWriter
         $finalPath = $directory.'/'.$filename;
         $temporaryPath = $directory.'/.'.$filename.'.'.bin2hex(random_bytes(8)).'.tmp';
 
-        if ($this->fileExists($disk, $finalPath)) {
+        if ($disk->exists($finalPath)) {
             throw new ReportWriteException("Report file already exists: {$filename}");
         }
 
@@ -86,7 +86,7 @@ class CsvReportWriter
             }
             $handle = null;
 
-            if ($this->fileExists($disk, $finalPath)) {
+            if ($disk->exists($finalPath)) {
                 throw new ReportWriteException("Report file already exists: {$filename}");
             }
 
@@ -110,10 +110,13 @@ class CsvReportWriter
         }
     }
 
-    public function delete(string $path): void
+    public function discard(int $processId): void
     {
-        if (! $this->disk()->delete($path)) {
-            throw new ReportWriteException('Unable to remove the report file.');
+        $disk = $this->disk();
+        $directory = $this->directory().'/'.$processId;
+
+        if ($disk->exists($directory) && ! $disk->deleteDirectory($directory)) {
+            throw new ReportWriteException('Unable to remove the report directory.');
         }
     }
 
@@ -180,10 +183,5 @@ class CsvReportWriter
                 $original,
             );
         }
-    }
-
-    private function fileExists(Filesystem $disk, string $path): bool
-    {
-        return $disk->exists($path);
     }
 }

@@ -9,6 +9,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         libicu-dev \
         libpq-dev \
+        unzip \
     && docker-php-ext-install -j"$(nproc)" \
         bcmath \
         intl \

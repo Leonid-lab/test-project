@@ -17,6 +17,7 @@ use Carbon\CarbonImmutable;
 use Database\Seeders\ProcessStatusSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Date;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Testing\PendingCommand;
@@ -267,6 +268,27 @@ final class GenerateCategoryReportCommandTest extends TestCase
             );
         }
 
+        self::assertSame([], Storage::disk('local')->allFiles('reports'));
+    }
+
+    public function test_a_catalog_query_failure_is_recorded_and_logged(): void
+    {
+        $manufacturer = Manufacturer::query()->create(['manufacturer_name' => 'Фабрика']);
+        $this->product($manufacturer, 10, 'Товар');
+        DB::connection()->beforeExecuting(static function (string $query): void {
+            if (str_contains($query, 'FROM manufacturer m')) {
+                throw new RuntimeException('Catalog query failed.');
+            }
+        });
+        Log::expects('error')->once();
+
+        $this->reportCommand(10)
+            ->expectsOutput('Unable to prepare the category report.')
+            ->assertFailed();
+
+        $process = ReportProcess::query()->sole();
+        self::assertSame(ProcessStatusId::Failed, $process->ps_id);
+        self::assertNotNull($process->rp_exec_time);
         self::assertSame([], Storage::disk('local')->allFiles('reports'));
     }
 

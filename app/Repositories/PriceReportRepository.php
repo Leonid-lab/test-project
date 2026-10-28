@@ -9,7 +9,9 @@ use App\Data\ReportRow;
 use Carbon\CarbonImmutable;
 use Generator;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use stdClass;
+use Throwable;
 
 final class PriceReportRepository
 {
@@ -81,8 +83,9 @@ final class PriceReportRepository
         CarbonImmutable $dateFrom,
         CarbonImmutable $dateTo,
     ): Generator {
-        $records = DB::cursor(
-            <<<'SQL'
+        $connection = DB::connection();
+        $cursor = 'report_'.bin2hex(random_bytes(8));
+        $query = <<<'SQL'
                 WITH target_products AS MATERIALIZED (
                     SELECT
                         p.product_id,
@@ -141,25 +144,38 @@ final class PriceReportRepository
                 INNER JOIN target_products p ON p.product_id = rr.product_id
                 INNER JOIN manufacturer m ON m.manufacturer_id = p.manufacturer_id
                 ORDER BY p.product_name, p.product_id, rr.row_order
-                SQL,
+                SQL;
+        $connection->transaction(fn () => $connection->statement(
+            "DECLARE {$cursor} NO SCROLL CURSOR WITH HOLD FOR ".$query,
             [
                 'category_id' => $categoryId,
                 'manufacturer_id' => $manufacturerId,
                 'date_from' => $dateFrom->toDateString(),
                 'date_to' => $dateTo->toDateString(),
             ],
-        );
+        ));
+        try {
+            do {
+                $records = $connection->select("FETCH FORWARD 500 FROM {$cursor}", [], false);
 
-        foreach ($records as $record) {
-            yield new ReportRow(
-                manufacturerId: (int) $record->manufacturer_id,
-                manufacturerName: (string) $record->manufacturer_name,
-                productId: (int) $record->product_id,
-                productName: (string) $record->product_name,
-                price: (string) $record->formatted_price,
-                priceDate: (string) $record->price_date,
-                rowOrder: (int) $record->row_order,
-            );
+                foreach ($records as $record) {
+                    yield new ReportRow(
+                        manufacturerId: (int) $record->manufacturer_id,
+                        manufacturerName: (string) $record->manufacturer_name,
+                        productId: (int) $record->product_id,
+                        productName: (string) $record->product_name,
+                        price: (string) $record->formatted_price,
+                        priceDate: (string) $record->price_date,
+                        rowOrder: (int) $record->row_order,
+                    );
+                }
+            } while (count($records) === 500);
+        } finally {
+            try {
+                $connection->statement("CLOSE {$cursor}");
+            } catch (Throwable $exception) {
+                Log::warning('Unable to close a report cursor.', ['exception' => $exception]);
+            }
         }
     }
 }

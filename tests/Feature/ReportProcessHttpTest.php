@@ -6,8 +6,11 @@ namespace Tests\Feature;
 
 use App\Enums\ProcessStatusId;
 use App\Models\ReportProcess;
+use App\Services\Reports\ReportProcessTracker;
+use Carbon\CarbonImmutable;
 use Database\Seeders\ProcessStatusSeeder;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Facades\Date;
 use Illuminate\Support\Facades\Storage;
 use Tests\TestCase;
 
@@ -74,7 +77,8 @@ final class ReportProcessHttpTest extends TestCase
 
         $this->get(route('report-processes.download', $completed))
             ->assertOk()
-            ->assertDownload(basename($path));
+            ->assertDownload(basename($path))
+            ->assertStreamedContent('csv-data');
 
         $missing = $this->process(
             pid: 2,
@@ -100,6 +104,26 @@ final class ReportProcessHttpTest extends TestCase
         $this->get(route('report-processes.download', $unsafe))->assertNotFound();
     }
 
+    public function test_process_times_are_stored_in_utc_and_displayed_in_the_application_timezone(): void
+    {
+        $now = CarbonImmutable::parse('2026-07-29 00:30:00', 'Europe/Moscow');
+        Date::setTestNow($now);
+        $tracker = $this->app->make(ReportProcessTracker::class);
+        $process = $tracker->start(123);
+
+        try {
+            self::assertSame($now->getTimestamp(), $process->fresh()->rp_start_datetime->getTimestamp());
+            self::assertSame(0, $process->fresh()->rp_start_datetime->getOffset());
+            $this->get(route('report-processes.index'))
+                ->assertOk()
+                ->assertSee('29.07.2026')
+                ->assertSee('00:30:00');
+        } finally {
+            $tracker->release($process);
+            Date::setTestNow();
+        }
+    }
+
     private function process(
         int $pid,
         ProcessStatusId $status,
@@ -108,7 +132,7 @@ final class ReportProcessHttpTest extends TestCase
     ): ReportProcess {
         return ReportProcess::query()->create([
             'rp_pid' => $pid,
-            'rp_start_datetime' => $startedAt,
+            'rp_start_datetime' => CarbonImmutable::parse($startedAt, config('app.timezone'))->utc(),
             'rp_exec_time' => $status === ProcessStatusId::Running ? null : '0.123',
             'ps_id' => $status,
             'rp_file_save_path' => $path,

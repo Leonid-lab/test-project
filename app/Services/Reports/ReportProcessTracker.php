@@ -6,7 +6,9 @@ namespace App\Services\Reports;
 
 use App\Enums\ProcessStatusId;
 use App\Models\ReportProcess;
+use Carbon\CarbonImmutable;
 use Illuminate\Support\Facades\Date;
+use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
 use Throwable;
 
@@ -15,13 +17,49 @@ final class ReportProcessTracker
     /**
      * Сохраняет начальный статус до формирования файла.
      */
-    public function start(int $pid): ReportProcess
+    public function start(int $pid, ?CarbonImmutable $startedAt = null): ReportProcess
     {
-        return ReportProcess::query()->create([
-            'rp_pid' => $pid,
-            'rp_start_datetime' => Date::now(),
-            'ps_id' => ProcessStatusId::Running,
-        ]);
+        return DB::transaction(function () use ($pid, $startedAt): ReportProcess {
+            $process = ReportProcess::query()->create([
+                'rp_pid' => $pid,
+                'rp_start_datetime' => $startedAt?->utc() ?? Date::now('UTC'),
+                'ps_id' => ProcessStatusId::Running,
+            ]);
+            DB::selectOne('SELECT pg_advisory_lock(?)', [$process->rp_id], false);
+
+            return $process;
+        });
+    }
+
+    public function acquire(ReportProcess $process): bool
+    {
+        // PostgreSQL разрешает повторный захват своей блокировки; такой отчёт ещё активен.
+        return DB::selectOne(
+            <<<'SQL'
+                SELECT pg_try_advisory_lock(?) AS acquired
+                WHERE NOT EXISTS (
+                    SELECT 1 FROM pg_locks
+                    WHERE locktype = 'advisory'
+                      AND pid = pg_backend_pid()
+                      AND objsubid = 1
+                      AND ((classid::bigint << 32) | objid::bigint) = ?
+                )
+                SQL,
+            [$process->rp_id, $process->rp_id],
+            false,
+        )?->acquired === true;
+    }
+
+    public function release(ReportProcess $process): void
+    {
+        try {
+            DB::selectOne('SELECT pg_advisory_unlock(?)', [$process->rp_id], false);
+        } catch (Throwable $exception) {
+            Log::warning('Unable to release a report process lock.', [
+                'process_id' => $process->rp_id,
+                'exception' => $exception,
+            ]);
+        }
     }
 
     public function complete(ReportProcess $process, float $seconds, string $path): void
@@ -42,10 +80,15 @@ final class ReportProcessTracker
         ]);
     }
 
-    public function recordExpectedFailure(int $pid): void
+    public function recordFailure(int $pid, float $seconds = 0.0, ?CarbonImmutable $startedAt = null): void
     {
-        $process = $this->start($pid);
-        $this->fail($process, 0.0);
+        $process = $this->start($pid, $startedAt);
+
+        try {
+            $this->fail($process, $seconds);
+        } finally {
+            $this->release($process);
+        }
     }
 
     public function failWithoutHiding(

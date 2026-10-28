@@ -8,6 +8,9 @@ use App\Exceptions\ReportGenerationException;
 use App\Services\Reports\CategoryReportGenerator;
 use App\Services\Reports\ReportProcessTracker;
 use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Date;
+use Illuminate\Support\Facades\Log;
+use Throwable;
 
 final class GenerateCategoryReportCommand extends Command
 {
@@ -35,18 +38,39 @@ final class GenerateCategoryReportCommand extends Command
         );
 
         if ($categoryId === false) {
-            $tracker->recordExpectedFailure($pid);
+            $tracker->recordFailure($pid);
             $this->error('The category_id argument must be a positive integer.');
 
             return self::FAILURE;
         }
 
         $startedAt = hrtime(true);
+        $startedOn = Date::now('UTC')->toImmutable();
 
         try {
+            if ($this->callSilent('report:recover') !== self::SUCCESS) {
+                $this->error('Unable to recover interrupted reports.');
+
+                return self::FAILURE;
+            }
+
             $result = $generator->generate($categoryId, $pid);
         } catch (ReportGenerationException $exception) {
             $this->error($exception->getMessage());
+
+            return self::FAILURE;
+        } catch (Throwable $exception) {
+            try {
+                $tracker->recordFailure($pid, (hrtime(true) - $startedAt) / 1_000_000_000, $startedOn);
+            } catch (Throwable $trackingException) {
+                Log::warning('Unable to record a failed report process.', ['exception' => $trackingException]);
+            }
+
+            Log::error('Unable to prepare a category report.', [
+                'category_id' => $categoryId,
+                'exception' => $exception,
+            ]);
+            $this->error('Unable to prepare the category report.');
 
             return self::FAILURE;
         }
